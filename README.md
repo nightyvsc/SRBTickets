@@ -187,6 +187,8 @@ En **PC1**, compila las imágenes Docker de los microservicios e impórtalas a c
 ./infra/build_images.sh --distribute
 ```
 
+La distribución usa SSH a cada worker y necesita que `estudiante` pueda ejecutar `sudo k3s ctr images import`. El script solicita la contraseña de sudo interactivamente una vez por worker; ejecútalo desde una terminal. No hace falta configurar sudo sin contraseña.
+
 Esto compilará:
 - `srb-gt:latest`
 - `srb-rmc:latest`

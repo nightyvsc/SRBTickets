@@ -54,8 +54,14 @@ if [[ "${1:-}" == "--distribute" ]]; then
         for img in "${IMAGES[@]}"; do
             tar_name="/tmp/srb-images/$(echo "$img" | tr ':' '_').tar"
             scp -o StrictHostKeyChecking=no "$tar_name" "estudiante@${w}:/tmp/"
-            ssh -o StrictHostKeyChecking=no "estudiante@${w}" "sudo k3s ctr images import $tar_name && rm -f $tar_name"
         done
+
+        remote_command="sudo -v"
+        for img in "${IMAGES[@]}"; do
+            remote_tar="/tmp/$(echo "$img" | tr ':' '_').tar"
+            remote_command+=" && sudo k3s ctr images import '${remote_tar}' && rm -f '${remote_tar}'"
+        done
+        ssh -tt -o StrictHostKeyChecking=no "estudiante@${w}" "$remote_command"
     done
     log "Image distribution to all nodes complete!"
 fi
