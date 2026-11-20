@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: persistence-svc
+  namespace: srb
+  labels:
+    app: persistence
+spec:
+  ports:
+  - name: persist
+    port: 5580
+    targetPort: 5580
+  - name: health
+    port: 8100
+    targetPort: 8100
+  selector:
+    app: persistence
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: persistence
+  namespace: srb
+  labels:
+    app: persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: persistence
+  template:
+    metadata:
+      labels:
+        app: persistence
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: srb-role
+                operator: In
+                values:
+                - storage
+      containers:
+      - name: persistence
+        image: srb-persistence:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: COMPONENT_NAME
+          value: "persistence"
+        - name: CRDB_HOST
+          value: "cockroachdb-public.srb.svc.cluster.local"
+        - name: CRDB_PORT
+          value: "26257"
+        - name: CRDB_DATABASE
+          value: "srb"
+        - name: CRDB_USER
+          value: "root"
+        - name: PERSIST_PORT
+          value: "5580"
+        - name: HEALTH_PORT
+          value: "8100"
+        ports:
+        - containerPort: 5580
+          name: persist
+        - containerPort: 8100
+          name: health
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3

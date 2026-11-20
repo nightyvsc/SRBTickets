@@ -1,0 +1,13 @@
+{
+  "case_id": "07_async_cancel",
+  "name": "Cancelación asincrónica y notificación SUB",
+  "description": "Envía cancelación vía DEALER al GT, recibe ACK inmediato ('ACCEPTED'), espera notificación vía SUB (topic client_id), verifica liberación de asientos.",
+  "type": "async_cancel",
+  "target_event": "E10",
+  "seats": 2,
+  "expected": {
+    "immediate_ack_status": "ACCEPTED",
+    "sub_notification_status": "CANCELLED",
+    "seats_freed": 2
+  }
+}

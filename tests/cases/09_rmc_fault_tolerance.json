@@ -1,0 +1,11 @@
+{
+  "case_id": "09_rmc_fault_tolerance",
+  "name": "Tolerancia a fallos: Caída de un RMC worker durante carga",
+  "description": "Simula reinicio/muerte de un pod RMC mientras se procesan solicitudes. GT detecta pérdida de heartbeats y re-enruta sin errores visibles al cliente.",
+  "type": "fault_injection",
+  "target_component": "rmc",
+  "expected": {
+    "client_errors": 0,
+    "auto_recovery": true
+  }
+}

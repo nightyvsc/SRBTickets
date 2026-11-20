@@ -1,0 +1,17 @@
+{
+  "case_id": "01_verify_seed",
+  "name": "Verificación de siembra inicial de base de datos",
+  "description": "Verifica que la BD cumpla exactamente: 50 eventos en 2026-11, 20 eventos con 2 ocurrencias (E01..E20), 30 eventos con 1 ocurrencia (E21..E50), 100 asientos de capacidad y libres por ocurrencia, 0 reservas.",
+  "type": "db_verification",
+  "verify_mode": "initial",
+  "expected": {
+    "total_events": 50,
+    "month": "2026-11",
+    "dual_occurrence_events": 20,
+    "single_occurrence_events": 30,
+    "total_occurrences": 70,
+    "capacity_per_occurrence": 100,
+    "free_seats_per_occurrence": 100,
+    "total_reservations": 0
+  }
+}

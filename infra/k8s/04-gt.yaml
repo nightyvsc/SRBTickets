@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gt-svc
+  namespace: srb
+  labels:
+    app: gt
+spec:
+  type: NodePort
+  ports:
+  - name: sync-req
+    port: 5555
+    targetPort: 5555
+    nodePort: 30055
+  - name: async-cancel
+    port: 5556
+    targetPort: 5556
+  - name: rmc-broker
+    port: 5570
+    targetPort: 5570
+  - name: cancel-push
+    port: 5575
+    targetPort: 5575
+  - name: health
+    port: 8100
+    targetPort: 8100
+  selector:
+    app: gt
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gt
+  namespace: srb
+  labels:
+    app: gt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gt
+  template:
+    metadata:
+      labels:
+        app: gt
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: srb-role
+                operator: In
+                values:
+                - business
+      containers:
+      - name: gt
+        image: srb-gt:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: COMPONENT_NAME
+          value: "gt"
+        - name: GT_SYNC_PORT
+          value: "5555"
+        - name: GT_ASYNC_PORT
+          value: "5556"
+        - name: GT_RMC_PORT
+          value: "5570"
+        - name: GT_CANCEL_PUSH_PORT
+          value: "5575"
+        - name: HEALTH_PORT
+          value: "8100"
+        ports:
+        - containerPort: 5555
+          name: sync-req
+        - containerPort: 5556
+          name: async-cancel
+        - containerPort: 5570
+          name: rmc-broker
+        - containerPort: 5575
+          name: cancel-push
+        - containerPort: 8100
+          name: health
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3

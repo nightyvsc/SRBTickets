@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cancel-svc
+  namespace: srb
+  labels:
+    app: cancel
+spec:
+  ports:
+  - name: notify-pub
+    port: 5590
+    targetPort: 5590
+  - name: health
+    port: 8100
+    targetPort: 8100
+  selector:
+    app: cancel
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cancel
+  namespace: srb
+  labels:
+    app: cancel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cancel
+  template:
+    metadata:
+      labels:
+        app: cancel
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: srb-role
+                operator: In
+                values:
+                - business
+      containers:
+      - name: cancel
+        image: srb-cancel:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: COMPONENT_NAME
+          value: "cancel"
+        - name: GT_CANCEL_PUSH_HOST
+          value: "gt-svc.srb.svc.cluster.local"
+        - name: GT_CANCEL_PUSH_PORT
+          value: "5575"
+        - name: PERSIST_HOST
+          value: "persistence-svc.srb.svc.cluster.local"
+        - name: PERSIST_PORT
+          value: "5580"
+        - name: NOTIFY_PORT
+          value: "5590"
+        - name: HEALTH_PORT
+          value: "8100"
+        ports:
+        - containerPort: 5590
+          name: notify-pub
+        - containerPort: 8100
+          name: health
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3

@@ -1,0 +1,12 @@
+{
+  "case_id": "11_performance_comparison",
+  "name": "Comparación de rendimiento: 1 RMC vs 3 RMC con Locust",
+  "description": "Ejecuta escenarios de carga con 3, 5 y 8 clientes virtuales sobre 1 réplica vs 3 réplicas RMC, extrayendo TPM, latencia media y desviación estándar.",
+  "type": "benchmark",
+  "scenarios": [3, 5, 8],
+  "replicas_tested": [1, 3],
+  "expected": {
+    "tpm_gain_with_3_rmc": true,
+    "metrics_generated": true
+  }
+}

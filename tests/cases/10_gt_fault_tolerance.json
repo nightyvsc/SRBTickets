@@ -1,0 +1,11 @@
+{
+  "case_id": "10_gt_fault_tolerance",
+  "name": "Tolerancia a fallos: Caída y reinicio del Gestor de Transacciones",
+  "description": "Simula caída del pod GT. Cliente reconecta automáticamente vía Lazy Pirate con backoff. Al revivir el GT, las reservas previas siguen intactas en CockroachDB.",
+  "type": "fault_injection",
+  "target_component": "gt",
+  "expected": {
+    "reconnect_success": true,
+    "data_integrity": true
+  }
+}

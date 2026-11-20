@@ -1,0 +1,12 @@
+{
+  "case_id": "12_final_db_verification",
+  "name": "Verificación del estado final de la base de datos",
+  "description": "Ejecuta verify_db.py en modo caso para contrastar el estado de eventos, ocurrencias y reservas activas/canceladas contra los registros de prueba.",
+  "type": "db_verification",
+  "verify_mode": "case",
+  "expected": {
+    "invariants_satisfied": true,
+    "no_negative_free_seats": true,
+    "no_overbooking": true
+  }
+}

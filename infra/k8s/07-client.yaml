@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: srb
+  labels:
+    app: client
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      labels:
+        app: client
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: srb-role
+                operator: In
+                values:
+                - control-plane
+                - clients
+      containers:
+      - name: client
+        image: srb-client:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: COMPONENT_NAME
+          value: "client"
+        - name: GT_SYNC_HOST
+          value: "gt-svc.srb.svc.cluster.local"
+        - name: GT_SYNC_PORT
+          value: "5555"
+        - name: GT_ASYNC_HOST
+          value: "gt-svc.srb.svc.cluster.local"
+        - name: GT_ASYNC_PORT
+          value: "5556"
+        - name: NOTIFY_HOST
+          value: "cancel-svc.srb.svc.cluster.local"
+        - name: NOTIFY_PORT
+          value: "5590"
+        - name: HEALTH_PORT
+          value: "8100"
+        - name: CLIENT_RATE
+          value: "25"
+        - name: CLIENT_QUERY_PCT
+          value: "40"
+        - name: CLIENT_RESERVE_PCT
+          value: "30"
+        - name: CLIENT_MODIFY_PCT
+          value: "20"
+        - name: CLIENT_CANCEL_PCT
+          value: "10"
+        ports:
+        - containerPort: 8100
+          name: health
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3

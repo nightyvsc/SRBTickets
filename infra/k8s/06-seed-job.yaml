@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-db
+  namespace: srb
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: seed-db
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: seed
+        image: srb-seed:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: COMPONENT_NAME
+          value: "seed"
+        - name: CRDB_HOST
+          value: "cockroachdb-public.srb.svc.cluster.local"
+        - name: CRDB_PORT
+          value: "26257"
+        - name: CRDB_DATABASE
+          value: "srb"
+        - name: CRDB_USER
+          value: "root"
+        - name: SEED_MONTH
+          value: "2026-11"
+        - name: SEED_NUM_EVENTS
+          value: "50"
+        - name: SEED_DUAL_OCCURRENCE_COUNT
+          value: "20"
+        - name: SEAT_CAPACITY
+          value: "100"
+        - name: SEED_RANDOM_SEED
+          value: "42"

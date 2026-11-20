@@ -1,0 +1,14 @@
+{
+  "case_id": "05_modify_seats",
+  "name": "Modificación de número de puestos (evento concurrencia única)",
+  "description": "Reserva asientos en evento E25 (1 sola ocurrencia), luego modifica cantidad de puestos (éxito al incrementar con cupo, rechazo atómico al exceder cupo).",
+  "type": "workflow",
+  "target_event": "E25",
+  "initial_seats": 5,
+  "modify_success_seats": 8,
+  "modify_fail_seats": 150,
+  "expected": {
+    "modify_success_status": "OK",
+    "modify_fail_status": "REJECTED"
+  }
+}

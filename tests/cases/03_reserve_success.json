@@ -1,0 +1,18 @@
+{
+  "case_id": "03_reserve_success",
+  "name": "Reserva exitosa de asientos",
+  "description": "Realiza una reserva de 4 puestos para un evento. Valida respuesta OK con reservation_id y decremento de free_seats en base de datos.",
+  "type": "zmq_request",
+  "request": {
+    "msg_type": "RESERVE",
+    "payload": {
+      "event_id": "E01",
+      "seats": 4
+    }
+  },
+  "expected": {
+    "status": "OK",
+    "reservation_status": "ACTIVE",
+    "seats_reserved": 4
+  }
+}

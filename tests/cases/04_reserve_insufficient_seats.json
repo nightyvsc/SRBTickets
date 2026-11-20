@@ -1,0 +1,17 @@
+{
+  "case_id": "04_reserve_insufficient_seats",
+  "name": "Reserva rechazada por cupo insuficiente",
+  "description": "Intenta reservar más de 100 puestos (105 asientos) en una ocurrencia. Valida rechazo inmediato y que los asientos libres queden intactos.",
+  "type": "zmq_request",
+  "request": {
+    "msg_type": "RESERVE",
+    "payload": {
+      "event_id": "E02",
+      "seats": 105
+    }
+  },
+  "expected": {
+    "status": "REJECTED",
+    "reason_contains": "insufficient"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "case_id": "02_query_events",
+  "name": "Consulta de eventos por mes",
+  "description": "Consulta eventos para 2026-11 vía GT (ZeroMQ REQ). Valida estructura de respuesta, conteo de 50 eventos y campos de ocurrencias.",
+  "type": "zmq_request",
+  "request": {
+    "msg_type": "QUERY",
+    "payload": {
+      "month": "2026-11"
+    }
+  },
+  "expected": {
+    "status": "OK",
+    "event_count": 50,
+    "occurrence_count": 70
+  }
+}

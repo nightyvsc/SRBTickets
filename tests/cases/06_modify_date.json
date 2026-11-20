@@ -1,0 +1,13 @@
+{
+  "case_id": "06_modify_date",
+  "name": "Modificación de fecha (evento con 2 ocurrencias)",
+  "description": "Reserva asientos en E05 (2 ocurrencias en el mes), cambia de fecha a la segunda ocurrencia conservando cupos. Intento de mover evento con 1 ocurrencia debe ser rechazado.",
+  "type": "workflow",
+  "dual_event": "E05",
+  "single_event": "E30",
+  "seats": 3,
+  "expected": {
+    "dual_modify_status": "OK",
+    "single_modify_status": "REJECTED"
+  }
+}

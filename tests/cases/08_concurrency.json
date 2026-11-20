@@ -1,0 +1,14 @@
+{
+  "case_id": "08_concurrency",
+  "name": "Concurrencia: Múltiples reservas simultáneas sobre la misma ocurrencia",
+  "description": "Ejecuta 25 hilos concurrentes intentando reservar 5 puestos cada uno (total 125 puestos sobre capacidad 100). Valida invariante: free_seats >= 0 y total vendidos <= 100 sin sobreventa.",
+  "type": "concurrency",
+  "target_event": "E15",
+  "concurrent_clients": 25,
+  "seats_per_client": 5,
+  "expected": {
+    "total_capacity": 100,
+    "max_sold": 100,
+    "free_seats_min": 0
+  }
+}
