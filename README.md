@@ -217,6 +217,8 @@ kubectl get pods -n srb -w
 
 Una vez que los pods `cockroachdb-0`, `cockroachdb-1` y `cockroachdb-2` estén en `Running`, el Job `cockroachdb-init` completará la inicialización del cluster y la creación de la base de datos `srb`.
 
+Si un pod entra en `CrashLoopBackOff`, revisa `kubectl logs -n srb cockroachdb-0 --previous`. Ante `bind: address already in use` en el puerto `26257`, vuelve a aplicar el manifiesto actualizado con `kubectl apply -f infra/k8s/01-cockroachdb.yaml`; el cambio conserva los PVC y evita definir por separado el listener SQL en el mismo puerto interno.
+
 Verifica el estado del cluster de BD:
 ```bash
 kubectl exec -it -n srb cockroachdb-0 -- ./cockroach node status --insecure
