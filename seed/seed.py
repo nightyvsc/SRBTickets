@@ -86,14 +86,14 @@ def connect_with_retry(
     raise RuntimeError("Unreachable")
 
 
-def seed_database() -> None:
+def seed_database(connstr: str | None = None) -> None:
     """Execute schema creation, truncation, and deterministic initial data insertion."""
     seed = Config.SEED_RANDOM_SEED
     month_str = Config.SEED_MONTH
     total_events = Config.SEED_NUM_EVENTS
     dual_count = Config.SEED_DUAL_OCCURRENCE_COUNT
     capacity = Config.SEAT_CAPACITY
-    connstr = Config.crdb_connstr()
+    connstr = connstr or Config.crdb_connstr()
 
     print(f"==================================================")
     print(f"SRB DATABASE SEEDER")

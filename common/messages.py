@@ -17,12 +17,15 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 
-class MsgType(StrEnum):
+class MsgType(str, Enum):
     """All supported message types in the SRB system."""
+
+    def __str__(self) -> str:
+        return self.value
 
     # Client → GT (sync)
     QUERY = "QUERY"

@@ -97,7 +97,7 @@ cd SRBTickets
 En **PC1**, ejecuta el script de instalación con rol `server`:
 ```bash
 chmod +x infra/install_k3s.sh infra/build_images.sh
-python3.12 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r locust/requirements.txt "psycopg[binary]" psycopg_pool
@@ -116,6 +116,7 @@ SRB_INTERFACE=enpXsY SRB_NODE_IP=10.43.99.216 ./infra/install_k3s.sh server
 ```
 
 El venv se usa para comandos Python y Locust; la instalación de K3s configura paquetes y servicios del sistema, por lo que activar el venv no corrige una IP/interfaz detectada incorrectamente.
+Los contenedores de servicios usan Python 3.12; los scripts de verificación y tests del host son compatibles con Python 3.10 o superior.
 
 El script:
 1. Instala dependencias y deshabilita swap.
@@ -246,7 +247,11 @@ kubectl wait --for=condition=complete --timeout=60s job/seed-db -n srb
 
 Verifica la siembra ejecutando el script de verificación desde PC1:
 ```bash
-python3 verify_db.py --mode initial
+kubectl port-forward -n srb svc/cockroachdb-public 26257:26257
+```
+Deja ese comando activo y, en otra terminal con el venv activado:
+```bash
+python verify_db.py --mode initial --connstr "postgresql://root@127.0.0.1:26257/srb?sslmode=disable"
 ```
 
 Debe reportar `[PASS]` en todas las comprobaciones:
@@ -298,11 +303,27 @@ kubectl logs -n srb -l app=client --tail=50 -f
 
 ## 4. Ejecución del Suite de Pruebas Automatizadas
 
-El archivo `tests/run_tests.py` ejecuta automáticamente los **12 casos de prueba obligatorios** de punta a punta:
+La compatibilidad de mensajes y el agregador de métricas pueden comprobarse sin cluster:
+```bash
+source .venv/bin/activate
+python -m unittest discover -s tests -p 'test_*.py'
+```
+
+Para los tests de integración, GT usa los NodePort `30055` (síncrono) y `30056` (asíncrono). Abre estos port-forwards en **dos terminales distintas** de PC1:
+```bash
+kubectl port-forward -n srb svc/cancel-svc 5590:5590
+```
+```bash
+kubectl port-forward -n srb svc/cockroachdb-public 26257:26257
+```
+
+El archivo `tests/run_tests.py` ejecuta los casos de integración. Desde una cuarta terminal, dentro del venv:
 
 ```bash
-python3 tests/run_tests.py --gt-host 10.43.99.216 --gt-port 30055 --db-connstr "postgresql://root@10.43.99.216:26257/srb?sslmode=disable"
+python tests/run_tests.py --gt-host 10.43.99.216 --gt-port 30055 --gt-async-port 30056 --notify-host 127.0.0.1 --notify-port 5590 --db-connstr "postgresql://root@127.0.0.1:26257/srb?sslmode=disable"
 ```
+
+El suite completo borra pods GT/RMC para probar recuperación, escala RMC y, en el caso 11, **vacía y vuelve a sembrar la BD seis veces**. Ejecútalo solo contra el cluster de pruebas: cualquier dato previo será reemplazado. El benchmark corre seis escenarios Locust de 2 minutos por defecto (aprox. 12 minutos); puedes reducirlo con `--benchmark-duration 20s`.
 
 ### Detalle de los 12 Casos de Prueba
 
@@ -316,12 +337,14 @@ python3 tests/run_tests.py --gt-host 10.43.99.216 --gt-port 30055 --db-connstr "
 | **06** | Modificación de fecha | Cambio de ocurrencia en evento dual; rechazo en eventos de ocurrencia única. |
 | **07** | Cancelación asincrónica | ACK `ACCEPTED` inmediato en DEALER; notificación `CANCELLED` vía SUB; liberación en BD. |
 | **08** | Concurrencia estricta | 25 clientes simultáneos pidiendo 5 asientos (125 solicitados sobre cupo 100). Invariante: 0 sobreventas, `free_seats >= 0`. |
-| **09** | Tolerancia a fallos: RMC | Eliminación del pod RMC a mitad de proceso; GT re-enruta automáticamente vía LRU. |
-| **10** | Tolerancia a fallos: GT | Eliminación del pod GT; clientes reconectan vía Lazy Pirate; estado íntegro en BD. |
-| **11** | Comparación de rendimiento | Ejecución de escenarios 3, 5 y 8 clientes sobre 1 RMC vs 3 RMC con Locust. |
+| **09** | Tolerancia a fallos RMC | Mantiene al menos dos réplicas, elimina un pod, verifica solicitudes y restaura el tamaño original. |
+| **10** | Tolerancia a fallos GT | Reserva un boleto, elimina el pod GT, reintenta consultas y verifica la reserva tras recuperarse. |
+| **11** | Comparación de rendimiento | Ejecuta escenarios de 3, 5 y 8 usuarios con 1 y 3 RMC; guarda logs y comparación TPM/latencia en `benchmark_results/`. |
 | **12** | Verificación final de BD | Invariantes matemáticas: `free_seats` >= 0, suma de asientos activos coincide con ocupados. |
 
 ---
+
+Los casos 09–11 automatizan inyección de fallas y benchmark desde el host PC1; requieren que `kubectl`, Locust y los port-forwards estén disponibles.
 
 ## 5. Pruebas de Carga y Métricas de Rendimiento (Locust)
 

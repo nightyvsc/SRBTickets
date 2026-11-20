@@ -15,6 +15,7 @@ spec:
   - name: async-cancel
     port: 5556
     targetPort: 5556
+    nodePort: 30056
   - name: rmc-broker
     port: 5570
     targetPort: 5570

@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import csv
 import json
 import os
+import re
+import statistics
+import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -49,10 +55,12 @@ class SRBTestRunner:
         self,
         gt_host: str = "localhost",
         gt_sync_port: int = 30055,
-        gt_async_port: int = 5556,
+        gt_async_port: int = 30056,
         notify_host: str = "localhost",
         notify_port: int = 5590,
         db_connstr: str | None = None,
+        benchmark_duration: str = "2m",
+        benchmark_output: str = "benchmark_results",
     ) -> None:
         self.gt_host = gt_host
         self.gt_sync_port = gt_sync_port
@@ -60,9 +68,104 @@ class SRBTestRunner:
         self.notify_host = notify_host
         self.notify_port = notify_port
         self.db_connstr = db_connstr or Config.crdb_connstr()
+        self.benchmark_duration = benchmark_duration
+        self.benchmark_output = Path(benchmark_output)
 
         self.ctx = zmq.Context()
         self.results: list[dict[str, Any]] = []
+
+    def _kubectl(self, *args: str, timeout: int = 120) -> str:
+        """Run kubectl and include its output when the command fails."""
+        result = subprocess.run(
+            ["kubectl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"kubectl {' '.join(args)} failed: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        return result.stdout.strip()
+
+    def _deployment_replicas(self, deployment: str) -> int:
+        """Return the desired replica count for a deployment."""
+        value = self._kubectl(
+            "get",
+            "deployment",
+            deployment,
+            "-n",
+            "srb",
+            "-o",
+            "jsonpath={.spec.replicas}",
+        )
+        return int(value)
+
+    def _scale_and_wait(self, deployment: str, replicas: int) -> None:
+        """Scale a deployment and wait until all desired replicas are available."""
+        self._kubectl(
+            "scale",
+            "deployment",
+            deployment,
+            f"--replicas={replicas}",
+            "-n",
+            "srb",
+        )
+        self._kubectl(
+            "rollout",
+            "status",
+            f"deployment/{deployment}",
+            "-n",
+            "srb",
+            "--timeout=180s",
+            timeout=190,
+        )
+
+    def _pod_names(self, app: str) -> list[str]:
+        """Return pod names selected by an app label."""
+        output = self._kubectl(
+            "get",
+            "pods",
+            "-n",
+            "srb",
+            "-l",
+            f"app={app}",
+            "-o",
+            "jsonpath={.items[*].metadata.name}",
+        )
+        return output.split()
+
+    def _query_until_available(self, timeout_s: float = 90.0) -> Envelope:
+        """Retry fresh REQ sockets until GT responds or the recovery deadline expires."""
+        deadline = time.monotonic() + timeout_s
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                response = self.send_sync_req(
+                    MsgType.QUERY,
+                    {"month": Config.SEED_MONTH},
+                    timeout_ms=1500,
+                )
+                if response.payload.get("status") == "OK":
+                    return response
+                last_error = RuntimeError(
+                    f"GT returned status {response.payload.get('status')}"
+                )
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.5)
+        raise TimeoutError(f"GT did not recover within {timeout_s}s: {last_error}")
+
+    def _benchmark_timeout(self) -> int:
+        """Convert a Locust duration such as 30s or 2m to a safe timeout."""
+        match = re.fullmatch(r"(\d+)([smh])", self.benchmark_duration)
+        if not match:
+            raise ValueError("Benchmark duration must use a value such as 30s or 2m.")
+        amount = int(match.group(1))
+        unit_seconds = {"s": 1, "m": 60, "h": 3600}[match.group(2)]
+        return amount * unit_seconds + 120
 
     def log(self, tag: str, msg: str) -> None:
         """Print timestamped test log."""
@@ -419,35 +522,340 @@ class SRBTestRunner:
             return self.record_result("08", "Concurrencia sin sobreventa", False, str(exc))
 
     def test_09_rmc_fault_tolerance(self) -> bool:
-        """Case 09: RMC fault tolerance demonstration."""
-        self.log("TEST 9", "RMC fault tolerance: GT LRU heartbeat eviction & auto-retry.")
-        # Verifies that sending queries when workers are active returns OK
+        """Case 09: Delete one RMC pod while another remains available."""
+        self.log("TEST 9", "Deleting one RMC pod and verifying broker recovery.")
+        original_replicas: int | None = None
+        passed = False
+        details = ""
         try:
-            resp = self.send_sync_req(MsgType.QUERY, {"month": "2026-11"})
-            passed = (resp.payload.get("status") == "OK")
-            details = "Verified GT handles requests; run 'kubectl delete pod -l app=rmc' to test live kill during Locust load"
-            return self.record_result("09", "Tolerancia a fallos: RMC", passed, details)
+            original_replicas = self._deployment_replicas("rmc")
+            active_replicas = max(2, original_replicas)
+            if active_replicas != original_replicas:
+                self._scale_and_wait("rmc", active_replicas)
+
+            pods = self._pod_names("rmc")
+            if len(pods) < 2:
+                raise RuntimeError("At least two ready RMC pods are required for this test.")
+
+            victim = pods[-1]
+            self._kubectl("delete", "pod", victim, "-n", "srb", "--wait=false")
+            heartbeat_window = (
+                Config.HEARTBEAT_INTERVAL_MS * Config.HEARTBEAT_LIVENESS / 1000.0
+            )
+            time.sleep(heartbeat_window + 0.5)
+
+            responses = [
+                self.send_sync_req(
+                    MsgType.QUERY,
+                    {"month": Config.SEED_MONTH},
+                    timeout_ms=15000,
+                )
+                for _ in range(3)
+            ]
+            passed = all(resp.payload.get("status") == "OK" for resp in responses)
+            self._kubectl(
+                "rollout",
+                "status",
+                "deployment/rmc",
+                "-n",
+                "srb",
+                "--timeout=180s",
+                timeout=190,
+            )
+            details = (
+                f"Deleted {victim}; "
+                f"successful queries={sum(resp.payload.get('status') == 'OK' for resp in responses)}/3"
+            )
         except Exception as exc:
-            return self.record_result("09", "Tolerancia a fallos: RMC", False, str(exc))
+            details = str(exc)
+        finally:
+            if original_replicas is not None:
+                try:
+                    if self._deployment_replicas("rmc") != original_replicas:
+                        self._scale_and_wait("rmc", original_replicas)
+                except Exception as exc:
+                    passed = False
+                    details = f"{details}; failed to restore RMC replicas: {exc}".strip("; ")
+        return self.record_result("09", "Tolerancia a fallos RMC", passed, details)
 
     def test_10_gt_fault_tolerance(self) -> bool:
-        """Case 10: GT fault tolerance and client reconnection."""
-        self.log("TEST 10", "GT fault tolerance: Stateless broker & client Lazy Pirate reconnection.")
+        """Case 10: Restart GT while a request loop retries and verify durable state."""
+        self.log("TEST 10", "Deleting the GT pod and retrying through NodePort.")
+        original_replicas: int | None = None
+        passed = False
+        details = ""
         try:
-            resp = self.send_sync_req(MsgType.QUERY, {"month": "2026-11"})
-            passed = (resp.payload.get("status") == "OK")
-            details = "Verified client reconnect pattern; run 'kubectl delete pod -l app=gt' to test transparent reconnect"
-            return self.record_result("10", "Tolerancia a fallos: GT", passed, details)
+            original_replicas = self._deployment_replicas("gt")
+            if original_replicas != 1:
+                self._scale_and_wait("gt", 1)
+
+            query = self.send_sync_req(
+                MsgType.QUERY,
+                {"month": Config.SEED_MONTH},
+            )
+            event = next(
+                (
+                    item
+                    for item in query.payload.get("events", [])
+                    if item.get("occurrences")
+                ),
+                None,
+            )
+            if event is None:
+                raise RuntimeError("No seeded occurrence is available for the GT restart test.")
+
+            occurrence_id = event["occurrences"][0]["occurrence_id"]
+            reserve = self.send_sync_req(
+                MsgType.RESERVE,
+                {"occurrence_id": occurrence_id, "seats": 2},
+                client_id="test-client-gt-fault",
+            )
+            reservation_id = reserve.payload.get("reservation_id")
+            if reserve.payload.get("status") != "OK" or not reservation_id:
+                raise RuntimeError(f"Could not create pre-failure reservation: {reserve.payload}")
+
+            with psycopg.connect(self.db_connstr) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT occurrence_id, seats, status FROM reservations WHERE reservation_id = %s;",
+                        (reservation_id,),
+                    )
+                    reservation_before = cur.fetchone()
+            if reservation_before is None:
+                raise RuntimeError(f"Reservation {reservation_id} was not persisted before GT restart.")
+
+            pods = self._pod_names("gt")
+            if len(pods) != 1:
+                raise RuntimeError(f"Expected one GT pod before restart, found {len(pods)}.")
+            victim = pods[0]
+            self._kubectl("delete", "pod", victim, "-n", "srb", "--wait=false")
+            self._kubectl(
+                "wait",
+                f"--for=delete",
+                f"pod/{victim}",
+                "-n",
+                "srb",
+                "--timeout=60s",
+                timeout=70,
+            )
+
+            self._query_until_available()
+            self._kubectl(
+                "rollout",
+                "status",
+                "deployment/gt",
+                "-n",
+                "srb",
+                "--timeout=180s",
+                timeout=190,
+            )
+
+            with psycopg.connect(self.db_connstr) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT occurrence_id, seats, status FROM reservations WHERE reservation_id = %s;",
+                        (reservation_id,),
+                    )
+                    reservation_after = cur.fetchone()
+
+            passed = reservation_after == reservation_before
+            details = (
+                f"GT recovered through {self.gt_host}:{self.gt_sync_port}; "
+                f"reservation state preserved={passed}"
+            )
         except Exception as exc:
-            return self.record_result("10", "Tolerancia a fallos: GT", False, str(exc))
+            details = str(exc)
+        finally:
+            if original_replicas is not None:
+                try:
+                    if self._deployment_replicas("gt") != original_replicas:
+                        self._scale_and_wait("gt", original_replicas)
+                except Exception as exc:
+                    passed = False
+                    details = f"{details}; failed to restore GT replicas: {exc}".strip("; ")
+        return self.record_result("10", "Tolerancia a fallos GT", passed, details)
 
     def test_11_performance_comparison(self) -> bool:
-        """Case 11: Performance comparison check."""
-        self.log("TEST 11", "Verifying metrics aggregator and Locust suite ready...")
-        import metrics.aggregate as agg
-        passed = hasattr(agg, "calculate_statistics")
-        details = "Locust suite available at locust/locustfile.py; aggregate script at metrics/aggregate.py"
-        return self.record_result("11", "Comparación de rendimiento (1 vs 3 RMC)", passed, details)
+        """Case 11: Run Locust scenarios with one and three RMC replicas."""
+        self.log("TEST 11", "Running Locust benchmark for 1 vs 3 RMC replicas.")
+        from metrics.aggregate import calculate_metrics, extract_json_record, load_records
+        from seed.seed import seed_database
+
+        original_rmc: int | None = None
+        original_client: int | None = None
+        scenario_summaries: dict[str, dict[str, Any]] = {}
+        locust_failures: dict[str, int] = {}
+        passed = False
+        details = ""
+        try:
+            original_rmc = self._deployment_replicas("rmc")
+            client_replicas = self._kubectl(
+                "get",
+                "deployment",
+                "client",
+                "-n",
+                "srb",
+                "--ignore-not-found",
+                "-o",
+                "jsonpath={.spec.replicas}",
+            )
+            if client_replicas:
+                original_client = int(client_replicas)
+                self._scale_and_wait("client", 0)
+
+            self.benchmark_output.mkdir(parents=True, exist_ok=True)
+            run_timeout = self._benchmark_timeout()
+            locust_executable = Path(sys.executable).with_name("locust")
+            if not locust_executable.is_file():
+                raise RuntimeError(
+                    f"Locust executable not found at {locust_executable}; install locust in the active venv."
+                )
+            for scenario in (3, 5, 8):
+                for replicas in (1, 3):
+                    self._scale_and_wait("rmc", replicas)
+                    seed_database(self.db_connstr)
+                    since_time = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+                    prefix = self.benchmark_output / f"locust_{replicas}rmc_scen{scenario}"
+                    env = os.environ.copy()
+                    env["LOCUST_SCENARIO"] = str(scenario)
+                    env["GT_HOST"] = f"{self.gt_host}:{self.gt_sync_port}"
+                    command = [
+                        str(locust_executable),
+                        "-f",
+                        str(Path(__file__).resolve().parents[1] / "locust" / "locustfile.py"),
+                        "--headless",
+                        "-u",
+                        str(scenario),
+                        "-r",
+                        str(scenario),
+                        "-t",
+                        self.benchmark_duration,
+                        "--csv",
+                        str(prefix),
+                    ]
+                    result = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        timeout=run_timeout,
+                        check=False,
+                        env=env,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(
+                            f"Locust scenario {scenario} with {replicas} RMC failed: "
+                            f"{result.stderr[-2000:] or result.stdout[-2000:]}"
+                        )
+                    stats_path = Path(f"{prefix}_stats.csv")
+                    if not stats_path.is_file():
+                        raise RuntimeError(f"Locust did not create its stats file: {stats_path}")
+                    with stats_path.open(newline="", encoding="utf-8") as stats_file:
+                        stats = csv.DictReader(stats_file)
+                        failures = sum(
+                            int(row.get("Failure Count", 0))
+                            for row in stats
+                            if row.get("Name") != "Aggregated"
+                        )
+                    run_name = f"{scenario}_users_{replicas}_rmc"
+                    locust_failures[run_name] = failures
+                    if failures:
+                        raise RuntimeError(
+                            f"Locust recorded {failures} failed requests for scenario {scenario} "
+                            f"with {replicas} RMC."
+                        )
+
+                    log_text = self._kubectl(
+                        "logs",
+                        "deployment/gt",
+                        "-n",
+                        "srb",
+                        f"--since-time={since_time}",
+                        timeout=60,
+                    )
+                    locust_logs = [
+                        line
+                        for line in log_text.splitlines()
+                        if (
+                            (entry := extract_json_record(line)) is not None
+                            and str(entry.get("client_id", "")).startswith("locust-")
+                        )
+                    ]
+                    log_path = self.benchmark_output / f"gt_{replicas}rmc_scen{scenario}.jsonl"
+                    log_path.write_text("\n".join(locust_logs) + "\n", encoding="utf-8")
+                    records = load_records([str(log_path)])
+                    if not records:
+                        raise RuntimeError(
+                            f"No GT request metrics captured for scenario {scenario} with {replicas} RMC."
+                        )
+                    metrics = calculate_metrics(records)
+                    if "summary" not in metrics:
+                        raise RuntimeError(
+                            f"GT logs did not contain usable metrics for scenario {scenario} with {replicas} RMC."
+                        )
+                    scenario_summaries[run_name] = metrics
+
+            averages = {
+                replicas: statistics.mean(
+                    scenario_summaries[f"{scenario}_users_{replicas}_rmc"]["summary"]["tpm"]
+                    for scenario in (3, 5, 8)
+                )
+                for replicas in (1, 3)
+            }
+            gain_percent = (
+                (averages[3] - averages[1]) / averages[1] * 100
+                if averages[1] > 0
+                else 0.0
+            )
+            report = {
+                "benchmark_duration": self.benchmark_duration,
+                "average_tpm": averages,
+                "tpm_gain_percent_with_3_rmc": round(gain_percent, 2),
+                "locust_failures": locust_failures,
+                "scenarios": scenario_summaries,
+            }
+            json_path = self.benchmark_output / "comparison.json"
+            json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            csv_path = self.benchmark_output / "comparison.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(["scenario", "rmc_replicas", "count", "tpm", "avg_ms", "std_ms"])
+                for scenario in (3, 5, 8):
+                    for replicas in (1, 3):
+                        summary = scenario_summaries[
+                            f"{scenario}_users_{replicas}_rmc"
+                        ]["summary"]
+                        writer.writerow(
+                            [
+                                scenario,
+                                replicas,
+                                summary["count"],
+                                summary["tpm"],
+                                summary["avg_ms"],
+                                summary["std_ms"],
+                            ]
+                        )
+            passed = True
+            details = (
+                f"Benchmark complete; average TPM: 1 RMC={averages[1]:.2f}, "
+                f"3 RMC={averages[3]:.2f}; gain={gain_percent:.2f}%; "
+                f"results={self.benchmark_output}"
+            )
+        except Exception as exc:
+            details = str(exc)
+        finally:
+            if original_client is not None:
+                try:
+                    self._scale_and_wait("client", original_client)
+                except Exception as exc:
+                    passed = False
+                    details = f"{details}; failed to restore client replicas: {exc}".strip("; ")
+            if original_rmc is not None:
+                try:
+                    self._scale_and_wait("rmc", original_rmc)
+                except Exception as exc:
+                    passed = False
+                    details = f"{details}; failed to restore RMC replicas: {exc}".strip("; ")
+        return self.record_result("11", "Benchmark Locust 1 vs 3 RMC", passed, details)
 
     def test_12_final_db_verification(self) -> bool:
         """Case 12: Final database verification."""
@@ -530,11 +938,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SRB Automated Test Runner")
     parser.add_argument("--gt-host", default=os.getenv("GT_HOST", "localhost"), help="GT host")
     parser.add_argument("--gt-port", type=int, default=int(os.getenv("GT_PORT", "30055")), help="GT sync port (NodePort)")
-    parser.add_argument("--gt-async-port", type=int, default=int(os.getenv("GT_ASYNC_PORT", "5556")), help="GT async port")
+    parser.add_argument("--gt-async-port", type=int, default=int(os.getenv("GT_ASYNC_PORT", "30056")), help="GT async NodePort")
     parser.add_argument("--notify-host", default=os.getenv("NOTIFY_HOST", "localhost"), help="Cancel notify PUB host")
     parser.add_argument("--notify-port", type=int, default=int(os.getenv("NOTIFY_PORT", "5590")), help="Cancel notify port")
     parser.add_argument("--db-connstr", default=None, help="CockroachDB connection string")
     parser.add_argument("--case", default=None, help="Run specific case (e.g. 01, 02, ...)")
+    parser.add_argument(
+        "--benchmark-duration",
+        default=os.getenv("SRB_BENCH_DURATION", "2m"),
+        help="Locust duration per scenario for case 11 (default: 2m).",
+    )
+    parser.add_argument(
+        "--benchmark-output",
+        default=os.getenv("SRB_BENCH_OUTPUT", "benchmark_results"),
+        help="Directory for Locust and comparison reports.",
+    )
 
     args = parser.parse_args()
     runner = SRBTestRunner(
@@ -544,14 +962,16 @@ def main() -> None:
         notify_host=args.notify_host,
         notify_port=args.notify_port,
         db_connstr=args.db_connstr,
+        benchmark_duration=args.benchmark_duration,
+        benchmark_output=args.benchmark_output,
     )
 
     if args.case:
-        method_name = f"test_{args.case.replace('.json', '')}"
-        # try matching prefix
-        matching = [m for m in dir(runner) if m.startswith(f"test_{args.case}")]
+        case_id = args.case.removesuffix(".json")
+        matching = [m for m in dir(runner) if m.startswith(f"test_{case_id}")]
         if matching:
-            getattr(runner, matching[0])()
+            passed = getattr(runner, matching[0])()
+            sys.exit(0 if passed else 1)
         else:
             print(f"Error: test case {args.case} not found.")
             sys.exit(1)
