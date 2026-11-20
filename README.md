@@ -97,7 +97,7 @@ cd SRBTickets
 En **PC1**, ejecuta el script de instalación con rol `server`:
 ```bash
 chmod +x infra/install_k3s.sh infra/build_images.sh
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r locust/requirements.txt "psycopg[binary]" psycopg_pool
@@ -218,6 +218,16 @@ kubectl get pods -n srb -w
 El StatefulSet usa el orden predeterminado `OrderedReady`: inicialmente crea solo `cockroachdb-0` y espera a que esté `Ready` antes de crear `cockroachdb-1` y `cockroachdb-2`. El Job `cockroachdb-init` inicializa el primer nodo; después deben aparecer los otros dos. `Running` por sí solo no significa que el nodo esté listo.
 
 La sonda de vida usa `/health`; la de readiness usa `/health?ready=1` y puede responder `503` mientras el cluster no se inicializa. Si un pod entra en `CrashLoopBackOff`, revisa `kubectl logs -n srb cockroachdb-0 --previous` y los eventos con `kubectl describe pod -n srb cockroachdb-0`.
+
+Verifica que el Job haya creado realmente la base de datos (no solo que el Job haya terminado):
+```bash
+kubectl exec -n srb cockroachdb-0 -- /cockroach/cockroach sql --insecure --host=localhost:26257 --database=defaultdb -e "SHOW DATABASES;"
+```
+
+Si un Job `cockroachdb-init` anterior figura como completado pero `srb` no aparece, créala desde `defaultdb`:
+```bash
+kubectl exec -n srb cockroachdb-0 -- /cockroach/cockroach sql --insecure --host=localhost:26257 --database=defaultdb -e "CREATE DATABASE IF NOT EXISTS srb;"
+```
 
 Verifica el estado del cluster de BD:
 ```bash

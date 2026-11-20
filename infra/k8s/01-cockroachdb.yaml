@@ -133,12 +133,13 @@ spec:
         imagePullPolicy: IfNotPresent
         command:
           - "/bin/bash"
-          - "-c"
+          - "-ec"
           - |
+            set -euo pipefail
             echo "Waiting for cockroachdb-0..."
             until /cockroach/cockroach init --insecure --host=cockroachdb-0.cockroachdb:26257 2>/dev/null || /cockroach/cockroach node status --insecure --host=cockroachdb-public:26257 >/dev/null 2>&1; do
               sleep 2
             done
             echo "Creating database srb..."
-            /cockroach/cockroach sql --insecure --host=cockroachdb-public:26257 -e "CREATE DATABASE IF NOT EXISTS srb;"
+            /cockroach/cockroach sql --insecure --host=cockroachdb-public:26257 --database=defaultdb -e "CREATE DATABASE IF NOT EXISTS srb;"
             echo "Cluster initialized successfully."
