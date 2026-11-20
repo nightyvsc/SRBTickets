@@ -39,13 +39,48 @@ log()   { echo -e "${GREEN}[SRB]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[SRB WARN]${NC} $*"; }
 error() { echo -e "${RED}[SRB ERROR]${NC} $*" >&2; exit 1; }
 
-# Detect primary interface and IP
+# Detect a non-loopback interface and address for the node.
+# SRB_INTERFACE and SRB_NODE_IP can be set when a machine has multiple NICs.
 detect_network() {
-    IFACE=$(ip route get 10.43.99.216 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
-    if [[ -z "$IFACE" ]]; then
-        IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+    local peer="${1:-}"
+    local route_info=""
+    local route_iface=""
+    local route_ip=""
+
+    if [[ -n "$peer" ]]; then
+        route_info=$(ip -4 route get "$peer" 2>/dev/null | head -1 || true)
+        route_iface=$(awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}' <<< "$route_info")
+        route_ip=$(awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' <<< "$route_info")
+        if [[ "$route_iface" == "lo" || "$route_ip" == 127.* ]]; then
+            route_iface=""
+            route_ip=""
+        fi
     fi
-    LOCAL_IP=$(ip -4 addr show "$IFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+
+    IFACE="${SRB_INTERFACE:-$route_iface}"
+    if [[ -z "$IFACE" ]]; then
+        IFACE=$(ip -4 route show default | awk 'NR==1 {print $5}')
+    fi
+    if [[ -z "$IFACE" ]]; then
+        IFACE=$(ip -o -4 addr show scope global | awk 'NR==1 {print $2}')
+    fi
+
+    if [[ -n "${SRB_NODE_IP:-}" ]]; then
+        LOCAL_IP="$SRB_NODE_IP"
+    elif [[ -n "$route_ip" && "$route_iface" == "$IFACE" ]]; then
+        LOCAL_IP="$route_ip"
+    else
+        LOCAL_IP=$(ip -o -4 addr show dev "$IFACE" scope global | awk 'NR==1 {split($4, a, "/"); print a[1]}')
+    fi
+
+    if [[ -z "$IFACE" || -z "$LOCAL_IP" || "$LOCAL_IP" == 127.* ]] ||
+        ! ip -o -4 addr show dev "$IFACE" scope global | awk -v ip="$LOCAL_IP" '
+            {split($4, a, "/"); if (a[1] == ip) found=1}
+            END {exit !found}
+        '; then
+        error "Could not determine a non-loopback node IP/interface. Set SRB_INTERFACE and SRB_NODE_IP explicitly. Check: ip -br -4 addr"
+    fi
+
     log "Detected network interface: ${IFACE}, IP: ${LOCAL_IP}"
 }
 
@@ -130,7 +165,7 @@ install_agent() {
         error "Usage: $0 agent <SERVER_IP> <TOKEN> [NODE_NAME] [SRB_ROLE]"
     fi
 
-    detect_network
+    detect_network "$SERVER_IP"
     NODE_IP="${LOCAL_IP}"
     NAME="${NODE_NAME:-$(hostname -s)}"
     ROLE_LABEL="${SRB_ROLE:-worker}"

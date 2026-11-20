@@ -97,14 +97,33 @@ cd SRBTickets
 En **PC1**, ejecuta el script de instalación con rol `server`:
 ```bash
 chmod +x infra/install_k3s.sh infra/build_images.sh
-./infra/install_k3s.sh server
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r locust/requirements.txt "psycopg[binary]" psycopg_pool
 ```
+
+Confirma que estás en la máquina PC1 correcta y que tiene Ubuntu 24.04:
+```bash
+lsb_release -ds
+ip -br -4 addr
+ip -4 route
+```
+
+La interfaz usada debe tener la IP LAN de PC1 (`10.43.99.216` en esta topología), no `127.0.0.1`. El script detecta la interfaz desde la ruta por defecto. Si la máquina tiene varias interfaces o la detección no elige la IP LAN, indica ambas explícitamente; sustituye `enpXsY` por el nombre real mostrado por `ip -br -4 addr`:
+```bash
+SRB_INTERFACE=enpXsY SRB_NODE_IP=10.43.99.216 ./infra/install_k3s.sh server
+```
+
+El venv se usa para comandos Python y Locust; la instalación de K3s configura paquetes y servicios del sistema, por lo que activar el venv no corrige una IP/interfaz detectada incorrectamente.
 
 El script:
 1. Instala dependencias y deshabilita swap.
 2. Habilita el reenvío de paquetes IP (`net.ipv4.ip_forward = 1`).
-3. Instala K3s Server fijando la IP `10.43.99.216`, deshabilitando Traefik y asignando la interfaz de red adecuada.
+3. Instala K3s Server con la IP LAN detectada o indicada, deshabilitando Traefik y usando la interfaz de red correspondiente.
 4. Muestra en pantalla el **Token de nodo** (`K3S_TOKEN`).
+
+Si K3s falla al arrancar, no borres su estado ni desinstales a ciegas. Comprueba primero `ip -br -4 addr` y consulta `sudo journalctl -u k3s -n 100 --no-pager`. En caso de haber detectado `lo`/`127.0.0.1`, corrige la interfaz/IP y vuelve a ejecutar el comando anterior.
 
 Copia el token generado:
 ```bash
